@@ -1,0 +1,149 @@
+services:
+
+  tor:
+    image: dockurr/tor
+    container_name: proxy-tor
+    restart: unless-stopped
+    volumes:
+      - ./app-data/tor/torrc:/etc/tor/torrc:ro
+      - tor-data:/var/lib/tor
+    networks:
+      - core-net
+
+  lnd:
+    image: lightninglabs/lnd:v0.20.0-beta
+    container_name: nodo-lnd
+    restart: unless-stopped
+    ports:
+      - "9735:9735"
+      - "10009:10009"
+      - "8080:8080"
+    volumes:
+      - ./app-data/lnd:/root/.lnd
+      - tor-data:/var/lib/tor:ro
+    command:
+      - --configfile=/root/.lnd/lnd.conf
+    depends_on:
+      - tor
+    networks:
+      - core-net
+
+  lit:
+    image: lightninglabs/lightning-terminal:v0.16.0-alpha
+    container_name: lightning-terminal
+    restart: unless-stopped
+    volumes:
+      - ./app-data/lit:/root/.lit  # Directorio de datos del servicio LIT
+      - ./app-data/lnd:/root/.lnd:ro  # Datos del nodo LND de solo lectura
+    command:
+      - --configfile=/root/.lit/lit.conf  # Carga la configuración desde lit.conf
+    depends_on:
+      - tor
+      - lnd
+    networks:
+      - core-net
+
+  lnbits:
+    image: lnbits/lnbits:v1.4.0
+    container_name: app-lnbits
+    restart: unless-stopped
+    volumes:
+      - ./app-data/lnd/:/app/.lnd/:ro
+      - ./app-data/lnbits/data/:/app/data
+      - ./app-data/lnbits/.env:/app/.env
+    networks:
+      - core-net
+      - db-net
+
+  db:
+    image: postgres:14.18-bookworm
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: 'user'
+      POSTGRES_PASSWORD: 'password'
+      POSTGRES_DB: 'lnbits_db'
+    volumes:
+      - ./app-data/lnbits_db/data/:/var/lib/postgresql/data
+    networks:
+      - db-net
+
+  cashu:
+    image: cashubtc/nutshell:0.18.2
+    container_name: cashu-mint
+    restart: unless-stopped
+    volumes:
+      - ./app-data/cashu/.env:/app/.env
+      - ./app-data/cashu/data:/app/data
+      - ./app-data/cashu/certs:/app/certs
+      - ./app-data/cashu/certs/server_private.pem:/app/server_private.pem
+      - ./app-data/cashu/certs/server_cert.pem:/app/server_cert.pem
+      - ./app-data/cashu/certs/ca_cert.pem:/app/ca_cert.pem
+      - ./app-data/cashu/certs/client_cert.pem:/app/client_cert.pem
+      - ./app-data/cashu/certs/client_private.pem:/app/client_private.pem
+      - ./app-data/cashu/backup:/app/backup
+    command: ["poetry", "run", "mint"]
+    depends_on:
+      - lnbits
+    networks:
+      - core-net
+
+  orchard:
+    image: ghcr.io/orangeshyguy21/orchard-mintdb-sqlite:1.5
+    container_name: app-orchard
+    restart: unless-stopped
+    volumes:
+      - ./app-data/orchard/.env:/app/.env
+      - ./app-data/orchard/data:/app/data
+      - ./app-data/cashu/data/mint:/app/cashu/mint
+      - ./app-data/cashu/certs/client_cert.pem:/app/client_cert.pem
+      - ./app-data/cashu/certs/client_private.pem:/app/client_private.pem
+      - ./app-data/cashu/certs/ca_cert.pem:/app/ca_cert.pem
+      - ./app-data/cashu/certs/ca_private.pem:/app/ca_private.pem
+      - ./app-data/lnd:/app/lnd:ro
+    depends_on:
+      - lnd
+      - cashu
+    networks:
+      - core-net
+
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx-proxy-manager
+    restart: unless-stopped
+    ports:
+      # These ports are in format <host-port>:<container-port>
+      - '80:80' # Public HTTP Port
+      - '443:443' # Public HTTPS Port
+#      - '81:81' # Admin Web Port
+    environment:
+      # Uncomment this if you want to change the location of
+      # the SQLite DB file within the container
+      - DB_SQLITE_FILE:"/data/database.sqlite"
+      # Uncomment this if IPv6 is not enabled on your host
+      - DISABLE_IPV6:'true'
+    volumes:
+      - ./app-data/npm/data:/data
+      - ./app-data/npm/letsencrypt:/etc/letsencrypt
+    networks:
+      - core-net
+
+  redis:
+    image: redis:8.4.0
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - core-net
+
+volumes:
+  tor-data:
+    name: tor-data
+
+networks:
+  core-net:
+    name: core-net
+    driver: bridge
+
+  db-net:
+    name: db-net
+    driver: bridge
